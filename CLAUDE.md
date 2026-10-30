@@ -1,0 +1,90 @@
+# QuillClips: notes for Claude
+
+Local-only clipping studio: long video → brief/campaign-relevant moments → Opus edit plan (EDL) → Remotion 9:16 render.
+The UI is in Turkish; generated content (titles, hooks, captions) is in English. User docs are in `README.md`.
+
+## Hard rules (do not break)
+
+- **AI = only `claude -p`** (Claude Code CLI, subscription). Every LLM call goes through `worker/app/claude_cli.py`.
+  - `child_env()` removes `ANTHROPIC_API_KEY` from the subprocess env.
+  - Never add the Anthropic SDK, OpenAI, an API key or any paid service.
+  - Never use `--bare`, because it requires an API key.
+- Everything else is local and free:
+  - transcript: faster-whisper
+  - TTS: Kokoro → Piper
+  - faces/speakers: OpenCV YuNet + mediapipe
+  - render: Remotion + ffmpeg
+  - SFX: synthesized by `sfx.py`, plus the user's own files
+- Models:
+  - Opus (`analysis_model`): analysis, selection, visual review, EDL
+  - Sonnet (`text_model`): metadata, title alternatives, translation, brief re-estimate
+- When the user says "don't ask": make reasonable assumptions, finish, test end to end, then update this file.
+
+## Commands
+
+```powershell
+npm run dev        # Next (3000) + FastAPI worker (8765) via scripts/dev.mjs
+npm run setup      # venv + requirements + models/fonts/SFX + Remotion browser
+npx tsc --noEmit -p .; npx eslint app components lib remotion; npx next build
+cd worker; .\.venv\Scripts\python.exe -c "import app.main"   # quick backend import check
+```
+
+There is no test suite. Verify by running the pipeline on a short synthetic video; scratch scripts live outside the repo.
+
+## Layout
+
+- `app/`: pages `/` (Panel + earnings), `/uretim`, `/uretim/[id]`, `/envanter`, `/kampanyalar`, `/ayarlar`.
+- `components/`:
+  - `OptionsPanel` (produce options + live caption/hook preview)
+  - `ClipCard` (scores, Kurgu box)
+  - `EditPlan` (EDL timeline)
+  - `ui.tsx` primitives
+- `lib/api.ts`: all API types. `lib/format.ts`: shared constants.
+- `remotion/`: composition `QuillClip` (`Root.tsx` → `Main.tsx`). Its props shape (`types.ts`) must match `edit_plan.build_props`.
+- `scripts/render-remotion.mjs`: bundle (cached in `data/cache/remotion`), serves the media dir over its own HTTP server, renders a **muted** h264 and prints JSON progress lines.
+- `worker/app/`: `main.py` (API), `jobs.py` (SQLite queue: analyze/produce/render/metadata), `db.py` (migrations via `PRAGMA user_version`), `config.py` (`DEFAULT_SETTINGS`).
+- `worker/app/pipeline/`:
+  - `analyze` (+ suggested brief, `estimate`)
+  - `select` (relevance + viral)
+  - `speakers`, `edit_signals`, `edit_plan` (schema/request/validate/TimeMap/Camera/build_props/readable)
+  - `audio_mix`, `sfx`, `render` (orchestrates per clip), `metadata`
+- `prompts/*.md`: system prompts. Change prompt and schema together.
+
+## Key behaviours
+
+- **Campaigns** replace the old "yayıncılar"; migration v2 drops the old table.
+  - A campaign's `person` fills the bottom bar.
+  - `platforms` limits metadata fields (`metadata.fields_for`).
+  - `notes` are rules for Claude.
+- **Brief:** `jobs.effective_brief(video)` returns the user brief, or else the analysis `suggested_brief`.
+  - Analysis and selection caches are keyed by a hash of brief/exclude/notes/model.
+  - Ranking = 0.6·relevance + 0.4·viral; clips below `min_relevance_score` are dropped.
+- **EDL times are clip-relative source seconds.** `TimeMap` converts them to output frames after cuts.
+  - The render opts → `edl` dict is stored on the clip.
+  - Rerender reuses `clip.edl.plan` unless `reedit`, the range or the style changed.
+- **Never trust the Opus EDL raw:**
+  - `edit_plan.validate` snaps cuts to candidates/word boundaries, caps removal at 45%, applies per-style density caps and strips emoji.
+  - On a non-limit error, `fallback()` is used.
+- **Audio:** Remotion output is muted. `audio_mix.mix` builds speech + hook TTS + SFX + ducked music, and ffmpeg muxes it with `loudnorm=I=-14`.
+- **Limits:** `ClaudeLimitError` pauses the job instead of failing it; `/api/jobs/resume` continues it.
+
+## Gotchas
+
+- **Windows PowerShell 5.1:**
+  - Refresh PATH first: `$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`.
+  - **Never edit UTF-8 files with Get-Content/Set-Content** (it mangles Turkish characters). Use the editor tools.
+  - Inline `python -c` with quotes breaks; write a script file.
+- **Next 16 (see AGENTS.md):**
+  - cacheComponents is on, so URL-reading hooks need `<Suspense>`.
+  - Page files may only export the page; put shared constants in `lib/`.
+  - React 19 lint forbids synchronous setState inside effects.
+  - If tsc complains about deleted routes, delete `.next` (stale generated validator types).
+- **Remotion 4.0.x / three:**
+  - Use `trimBefore`, not `startFrom`.
+  - `ThreeCanvas` needs width/height.
+  - three's `TextGeometry` uses `depth`.
+  - 3D fonts are typeface JSON in `public/fonts3d`, generated by `worker/app/fonts3d.py`.
+- **Edge headless screenshots:** pass `--user-data-dir` to a fresh dir and run via `Start-Process -Wait`. Otherwise it silently writes nothing while another Edge is open.
+- Whisper splits numbers ("$20" + ",000"). `render.clip_words` glues punctuation-led tokens back, so use it for any clip word list.
+- The worker has no auto-reload: restart `npm run dev` after Python changes. Remotion source changes invalidate the bundle cache automatically (hash of `remotion/`).
+- The machine has no CUDA (Ryzen 5 1600, AMD GPU): Whisper runs `small` int8 on CPU, and a 30 s clip renders in about 2–4 min.

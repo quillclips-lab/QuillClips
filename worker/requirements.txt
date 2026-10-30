@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+faster-whisper>=1.1
+kokoro-onnx>=0.4
+soundfile>=0.12
+numpy>=1.26
+# mediapipe pulls in opencv-contrib-python (includes cv2.FaceDetectorYN); do not also install opencv-python-headless
+mediapipe>=0.10.20
+opencv-contrib-python>=4.9
+fonttools>=4.50
+Pillow>=10.3
+piper-tts>=1.3
